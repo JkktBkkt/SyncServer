@@ -556,7 +556,7 @@ public class SyncSession
                                 writer.Write(record.PublisherPublicKey);
                                 writer.Write(record.EncryptedBlob.Length);
                                 writer.Write(record.EncryptedBlob);
-                                writer.Write(record.Timestamp.ToBinary());
+                                writer.Write(new DateTimeOffset(record.Timestamp).ToUnixTimeSeconds());
                             }
                             await SendAsync(Opcode.RESPONSE, (byte)ResponseOpcode.BULK_GET_RECORD, ms.ToArray());
                         }
@@ -1667,7 +1667,7 @@ public class SyncSession
                     byte[] keyBytes = Encoding.UTF8.GetBytes(key);
                     writer.Write((byte)keyBytes.Length);
                     writer.Write(keyBytes);
-                    writer.Write(timestamp.ToBinary());
+                    writer.Write(new DateTimeOffset(timestamp).ToUnixTimeSeconds());
                     writer.Write(size);
                 }
                 var responseData = ms.ToArray();
@@ -1730,7 +1730,7 @@ public class SyncSession
                     writer.Write((int)GetRecordResponseCode.Success);
                     writer.Write(record.EncryptedBlob.Length);
                     writer.Write(record.EncryptedBlob);
-                    writer.Write(record.Timestamp.ToBinary());
+                    writer.Write(new DateTimeOffset(record.Timestamp).ToUnixTimeSeconds());
                     var responseData = ms.ToArray();
                     await SendAsync(Opcode.RESPONSE, (byte)ResponseOpcode.GET_RECORD, responseData);
 
