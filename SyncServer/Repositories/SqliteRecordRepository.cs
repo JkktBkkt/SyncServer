@@ -41,6 +41,7 @@ public class SqliteRecordRepository : IRecordRepository
     private readonly MemoryCache _recordCache;
     private readonly ConcurrentQueue<SqliteConnection> _connectionPool;
     private readonly SemaphoreSlim _connectionSemaphore;
+    private readonly SemaphoreSlim _getOrCreateUserIdSemaphore = new SemaphoreSlim(1);
     private readonly int _poolSize;
     private readonly MemoryCache _userIdCache;
 
@@ -157,26 +158,35 @@ public class SqliteRecordRepository : IRecordRepository
             return userId;
         }
 
-        using var command = connection.CreateCommand();
-        command.CommandText = "SELECT user_id FROM users WHERE public_key = @publicKey";
-        command.Parameters.AddWithValue("@publicKey", publicKey);
-        var result = await command.ExecuteScalarAsync();
+        await _getOrCreateUserIdSemaphore.WaitAsync();
 
-        if (result != null)
+        try
         {
-            userId = (long)result;
+            using var command = connection.CreateCommand();
+            command.CommandText = "SELECT user_id FROM users WHERE public_key = @publicKey";
+            command.Parameters.AddWithValue("@publicKey", publicKey);
+            var result = await command.ExecuteScalarAsync();
+
+            if (result != null)
+            {
+                userId = (long)result;
+            }
+            else
+            {
+                command.CommandText = "INSERT INTO users (public_key) VALUES (@publicKey); SELECT last_insert_rowid();";
+                var insertResult = await command.ExecuteScalarAsync();
+                if (insertResult == null)
+                    throw new InvalidOperationException("Failed to insert user and retrieve user ID.");
+                userId = (long)insertResult;
+            }
+            var cacheEntryOptions = new MemoryCacheEntryOptions().SetSize(1);
+            _userIdCache.Set(publicKey, userId, cacheEntryOptions);
+            return userId;
         }
-        else
+        finally
         {
-            command.CommandText = "INSERT INTO users (public_key) VALUES (@publicKey); SELECT last_insert_rowid();";
-            var insertResult = await command.ExecuteScalarAsync();
-            if (insertResult == null)
-                throw new InvalidOperationException("Failed to insert user and retrieve user ID.");
-            userId = (long)insertResult;
+            _getOrCreateUserIdSemaphore.Release();
         }
-        var cacheEntryOptions = new MemoryCacheEntryOptions().SetSize(1);
-        _userIdCache.Set(publicKey, userId, cacheEntryOptions);
-        return userId;
     }
 
     public async Task InsertOrUpdateAsync(byte[] publisherPublicKey, byte[] consumerPublicKey, string key, byte[] encryptedBlob)
