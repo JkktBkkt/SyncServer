@@ -37,7 +37,8 @@ public class SyncService : IDisposable
     private TcpListener? _serverSocket;
     private readonly Dictionary<string, long> _lastMdnsConnectTimes = new Dictionary<string, long>();
     private readonly Dictionary<string, SyncSession> _sessions = new Dictionary<string, SyncSession>();
-    private readonly ConcurrentDictionary<string, Action<bool?, string>> _remotePendingStatusUpdate = new();
+    private readonly ConcurrentDictionary<string, Action<bool?, string>> _remotePendingStatusUpdateRelayed = new();
+    private readonly ConcurrentDictionary<string, Action<bool?, string>> _remotePendingStatusUpdateDirect = new();
     public bool ServerSocketFailedToStart { get; private set; } = false;
     public bool ServerSocketStarted { get; private set; } = false;
     public bool RelayConnected { get; private set; } = false;
@@ -253,8 +254,8 @@ public class SyncService : IDisposable
                                 {
                                     session.RemoveChannel(channel);
                                     var remotePublicKey = channel.RemotePublicKey;
-                                    if (remotePublicKey != null && _remotePendingStatusUpdate.TryRemove(remotePublicKey, out var c))
-                                        c?.Invoke(false, "Channel closed");
+                                    if (remotePublicKey != null)
+                                        SendRemotePendingStatusUpdate(remotePublicKey, false, "Channel closed");
                                 });
                             },
                             onChannelEstablished: async (_, channel, isResponder) =>
@@ -602,7 +603,7 @@ public class SyncService : IDisposable
                             relayRequestStarted = true;
                             onStatusUpdate?.Invoke(null, "Connecting via relay...");
                             if (onStatusUpdate != null)
-                                _remotePendingStatusUpdate[deviceInfo.PublicKey.DecodeBase64().EncodeBase64()] = onStatusUpdate;
+                                _remotePendingStatusUpdateRelayed[deviceInfo.PublicKey.DecodeBase64().EncodeBase64()] = onStatusUpdate;
                             await relaySession.StartRelayedChannelAsync(deviceInfo.PublicKey, AppId, deviceInfo.PairingCode, cancellationToken);
                         }
                     }
@@ -625,7 +626,7 @@ public class SyncService : IDisposable
                 relayRequestStarted = true;
                 onStatusUpdate?.Invoke(null, "Connecting via relay...");
                 if (onStatusUpdate != null)
-                    _remotePendingStatusUpdate[deviceInfo.PublicKey.DecodeBase64().EncodeBase64()] = onStatusUpdate;
+                    _remotePendingStatusUpdateRelayed[deviceInfo.PublicKey.DecodeBase64().EncodeBase64()] = onStatusUpdate;
                 await relaySession.StartRelayedChannelAsync(deviceInfo.PublicKey, AppId, deviceInfo.PairingCode, cancellationToken);
             }
             else
@@ -646,7 +647,7 @@ public class SyncService : IDisposable
         });
 
         if (onStatusUpdate != null)
-            _remotePendingStatusUpdate[remotePublicKey.DecodeBase64().EncodeBase64()] = onStatusUpdate;
+            _remotePendingStatusUpdateDirect[remotePublicKey.DecodeBase64().EncodeBase64()] = onStatusUpdate;
         onStatusUpdate?.Invoke(null, "Handshaking...");
         session.StartAsInitiator(remotePublicKey, AppId, pairingCode, cancellationToken);
         return session;
@@ -673,13 +674,23 @@ public class SyncService : IDisposable
         return PairingCode == pairingCode;
     }
 
+    private void SendRemotePendingStatusUpdate(string remotePublicKey, bool complete, string message) {
+        lock(_remotePendingStatusUpdateDirect) {
+            if (_remotePendingStatusUpdateDirect.TryRemove(remotePublicKey, out var m) && m != null)
+                m?.Invoke(complete, message);
+        }
+        lock (_remotePendingStatusUpdateRelayed)
+        {
+            if (_remotePendingStatusUpdateRelayed.TryRemove(remotePublicKey, out var m) && m != null)
+                m?.Invoke(complete, message);
+        }
+    }
+
     private SyncSession CreateNewSyncSession(string remotePublicKey, string? remoteDeviceName)
     {
         return new SyncSession(remotePublicKey, onAuthorized: (sess, isNewlyAuthorized, isNewSession) =>
         {
-            if (_remotePendingStatusUpdate.TryRemove(remotePublicKey, out var m) && m != null)
-                m?.Invoke(true, "Authorized");
-
+            SendRemotePendingStatusUpdate(remotePublicKey, true, "Authorized");
             if (isNewSession)
             {
                 var rdn = sess.RemoteDeviceName;
@@ -690,10 +701,9 @@ public class SyncService : IDisposable
             }
 
             OnAuthorized?.Invoke(sess, isNewlyAuthorized, isNewlyAuthorized);
-        }, onUnauthorized: sess => {
-            if (_remotePendingStatusUpdate.TryRemove(remotePublicKey, out var m) && m != null)
-                m?.Invoke(false, "Unauthorized");
-
+        }, onUnauthorized: sess =>
+        {
+            SendRemotePendingStatusUpdate(remotePublicKey, false, "Unauthorized");
             OnUnauthorized?.Invoke(sess);
         }, onConnectedChanged: (sess, connected) =>
         {
@@ -702,12 +712,8 @@ public class SyncService : IDisposable
         }, onClose: sess =>
         {
             Logger.Info<SyncService>($"{sess.RemotePublicKey} closed");
-
             RemoveSession(remotePublicKey);
-
-            if (_remotePendingStatusUpdate.TryRemove(remotePublicKey, out var m) && m != null)
-                m?.Invoke(false, "Connection closed");
-
+            SendRemotePendingStatusUpdate(remotePublicKey, false, "Connection closed");
             OnClose?.Invoke(sess);
         }, dataHandler: (sess, opcode, subOpcode, data) =>
         {
