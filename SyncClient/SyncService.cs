@@ -589,6 +589,16 @@ public class SyncService : IDisposable
         bool relayRequestStarted = false;
         try
         {
+            var relaySession = _relaySession;
+            if (!relayRequestStarted && relaySession != null && _settings.RelayPairAllowed)
+            {
+                relayRequestStarted = true;
+                onStatusUpdate?.Invoke(null, "Connecting via relay...");
+                if (onStatusUpdate != null)
+                    _remotePendingStatusUpdateRelayed[deviceInfo.PublicKey.DecodeBase64().EncodeBase64()] = onStatusUpdate;
+                await relaySession.StartRelayedChannelAsync(deviceInfo.PublicKey, AppId, deviceInfo.PairingCode, cancellationToken);
+            }
+
             await ConnectAsync(deviceInfo.Addresses, deviceInfo.Port, deviceInfo.PublicKey, deviceInfo.PairingCode, async (completed, message) =>
             {
                 try
@@ -620,19 +630,7 @@ public class SyncService : IDisposable
         catch (Exception e)
         {
             Logger.Error<SyncService>("Failed to connect directly.", e);
-            var relaySession = _relaySession;
-            if (!relayRequestStarted && relaySession != null && _settings.RelayPairAllowed)
-            {
-                relayRequestStarted = true;
-                onStatusUpdate?.Invoke(null, "Connecting via relay...");
-                if (onStatusUpdate != null)
-                    _remotePendingStatusUpdateRelayed[deviceInfo.PublicKey.DecodeBase64().EncodeBase64()] = onStatusUpdate;
-                await relaySession.StartRelayedChannelAsync(deviceInfo.PublicKey, AppId, deviceInfo.PairingCode, cancellationToken);
-            }
-            else
-            {
-                throw;
-            }
+            throw;
         }
     }
 
