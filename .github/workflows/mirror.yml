@@ -1,0 +1,21 @@
+# .github/workflows/mirror.yml
+name: 'mirror'
+on:
+  push:
+    branches:
+        - __mirror
+  schedule:
+    - cron: '47 8 * * *'
+  workflow_dispatch:
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    name: mirror
+    steps:
+      - name: mirror
+        id: mirror
+        uses: kaidokert/github-mirror-action@v4
+        with:
+          origin: 'https://gitlab.futo.org/videostreaming/SyncServer.git'
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
